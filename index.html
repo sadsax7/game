@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flappy Square</title>
+  <style>
+    :root { --bg:#0f172a; --fg:#e2e8f0; --accent:#22d3ee; --muted:#334155; --good:#10b981; --bad:#ef4444; }
+    * { box-sizing: border-box; }
+    html, body { height:100%; margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif; color: var(--fg); background: radial-gradient(1200px 800px at 20% 10%, #0b1229, #0f172a); }
+    .wrap { display:flex; align-items:center; justify-content:center; height:100%; padding:16px; }
+    .card { width: min(520px, 100%); background: rgba(15,23,42,.6); border: 1px solid rgba(148,163,184,.2); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.4); overflow:hidden; }
+    header { padding:14px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid rgba(148,163,184,.15); }
+    header h1 { font-size:16px; margin:0; letter-spacing:.4px; font-weight:700; }
+    header .meta { font-size:12px; opacity:.8; }
+    canvas { display:block; width:100%; background: linear-gradient(#0ea5e9 0 35%, #7dd3fc 35% 36%, #22c55e 36% 100%); }
+    .row { display:flex; gap:8px; padding:10px 12px; align-items:center; border-top:1px solid rgba(148,163,184,.15); }
+    .btn { appearance:none; border:1px solid rgba(148,163,184,.25); background:#111827; color:var(--fg); padding:8px 10px; border-radius:10px; cursor:pointer; font-weight:600; font-size:12px; }
+    .btn:hover { border-color:var(--accent); box-shadow:0 0 0 3px rgba(34,211,238,.15); }
+    .hint { font-size:12px; opacity:.85; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <h1>🕹️ Flappy Square</h1>
+        <div class="meta">Space / Click = jump · P = pause</div>
+      </header>
+      <canvas id="game" width="480" height="680" aria-label="Flappy Square"></canvas>
+      <div class="row">
+        <button class="btn" id="restart">Restart</button>
+        <button class="btn" id="pause">Pause</button>
+        <div class="hint" id="stats">Score: 0 · Best: 0</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    const c = document.getElementById('game');
+    const ctx = c.getContext('2d');
+    const restartBtn = document.getElementById('restart');
+    const pauseBtn = document.getElementById('pause');
+    const stats = document.getElementById('stats');
+
+    // Scale to device pixel ratio for crispness
+    const DPR = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    function resize() {
+      const cssW = c.clientWidth;
+      const cssH = Math.floor(cssW * (680/480));
+      c.style.height = cssH + 'px';
+      c.width = cssW * DPR; c.height = cssH * DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+    }
+    new ResizeObserver(resize).observe(c);
+
+    const G = 0.55; // gravity
+    const JUMP = -9.5; // jump velocity
+    const PIPE_GAP_MIN = 140, PIPE_GAP_MAX = 200;
+    const PIPE_W = 68; const PIPE_SPEED = 3.2;
+
+    let best = +localStorage.getItem('flappy_best') || 0;
+
+    const state = {
+      running: true,
+      started: false,
+      score: 0,
+      bird: { x: 120, y: 300, w: 34, h: 34, vy: 0 },
+      pipes: [],
+      lastX: 0
+    };
+
+    function rand(a,b){ return Math.random()*(b-a)+a }
+
+    function reset(){
+      state.started = false; state.running = true; state.score = 0;
+      state.bird = { x: 120, y: 300, w: 34, h: 34, vy: 0 };
+      state.pipes = [];
+      spawnPipe(); spawnPipe(true); // two to start
+    }
+
+    function spawnPipe(initial=false){
+      const gap = rand(PIPE_GAP_MIN, PIPE_GAP_MAX);
+      const topH = rand(80, c.height - 240);
+      const x = initial ? c.width + (state.pipes.length?240:0) : c.width + 120;
+      state.pipes.push({ x, w: PIPE_W, top: topH, bottom: topH + gap, scored:false });
+    }
+
+    function collideRect(ax,ay,aw,ah, bx,by,bw,bh){
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    function drawBackground(){
+      // simple parallax hills
+      ctx.fillStyle = '#0ea5e9'; ctx.fillRect(0,0,c.width, c.height*0.35);
+      ctx.fillStyle = '#7dd3fc'; ctx.fillRect(0,c.height*0.35, c.width, c.height*0.01);
+      ctx.fillStyle = '#22c55e'; ctx.fillRect(0,c.height*0.36, c.width, c.height);
+      ctx.fillStyle = 'rgba(255,255,255,.35)';
+      for(let i=0;i<5;i++){ let x=(Date.now()/20+i*180)% (c.width+60)-60; ctx.fillRect(x, 80+i*8, 50, 8) }
+    }
+
+    function drawBird(){
+      const b = state.bird;
+      // body
+      ctx.fillStyle = '#22d3ee';
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      // eye
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(b.x + b.w*0.62, b.y + b.h*0.28, 6,6);
+      // beak
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(b.x + b.w, b.y + b.h*0.5 - 4, 8, 8);
+    }
+
+    function drawPipes(){
+      ctx.fillStyle = '#0ea5e9';
+      state.pipes.forEach(p => {
+        // top pipe
+        ctx.fillStyle = '#064e3b';
+        ctx.fillRect(p.x, 0, p.w, p.top);
+        // bottom pipe
+        ctx.fillStyle = '#065f46';
+        ctx.fillRect(p.x, p.bottom, p.w, c.height - p.bottom);
+      });
+    }
+
+    function update(){
+      if(!state.running) return;
+
+      // Bird physics
+      if(state.started){
+        state.bird.vy += G; state.bird.y += state.bird.vy;
+      }
+
+      // Pipes
+      state.pipes.forEach(p => { p.x -= PIPE_SPEED; });
+      if(state.pipes.length && state.pipes[0].x + PIPE_W < -2) state.pipes.shift();
+      const last = state.pipes[state.pipes.length-1];
+      if(last && last.x < c.width - 240) spawnPipe();
+
+      // Scoring & collisions
+      state.pipes.forEach(p => {
+        // score when center passes
+        if(!p.scored && state.bird.x > p.x + p.w){ p.scored = true; state.score++; best = Math.max(best, state.score); localStorage.setItem('flappy_best', best); }
+        // collisions
+        const b = state.bird;
+        if(collideRect(b.x,b.y,b.w,b.h, p.x,0,p.w,p.top) || collideRect(b.x,b.y,b.w,b.h, p.x,p.bottom,p.w,c.height-p.bottom))
+          gameOver();
+      });
+
+      // floor/ceiling
+      if(state.bird.y < 0 || state.bird.y + state.bird.h > c.height) gameOver();
+    }
+
+    function gameOver(){ state.running=false; state.started=false; flash('#ef4444'); }
+
+    function flash(color){
+      ctx.save(); ctx.fillStyle = color; ctx.globalAlpha=.25; ctx.fillRect(0,0,c.width,c.height); ctx.restore();
+    }
+
+    function render(){
+      drawBackground();
+      drawPipes();
+      drawBird();
+
+      // HUD
+      ctx.fillStyle = 'rgba(15,23,42,.6)'; ctx.fillRect(8,8,130,40);
+      ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 18px system-ui'; ctx.fillText('Score: '+state.score, 14, 30);
+      ctx.textAlign='right'; ctx.fillText('Best: '+best, c.width-14, 30); ctx.textAlign='left';
+
+      if(!state.started){
+        ctx.fillStyle='rgba(15,23,42,.65)'; ctx.fillRect(0,0,c.width,c.height);
+        ctx.fillStyle='#e2e8f0'; ctx.font='bold 26px system-ui';
+        ctx.textAlign='center'; ctx.fillText('Click or press Space to start', c.width/2, c.height/2 - 20);
+        ctx.font='14px system-ui'; ctx.fillText('P = pause', c.width/2, c.height/2 + 10);
+        ctx.textAlign='left';
+      }
+
+      stats.textContent = `Score: ${state.score} · Best: ${best}`;
+    }
+
+    function loop(){ update(); render(); requestAnimationFrame(loop); }
+
+    function jump(){ state.bird.vy = JUMP; state.started = true; }
+    function togglePause(){ state.running = !state.running; pauseBtn.textContent = state.running ? 'Pause' : 'Resume'; }
+
+    // Events
+    c.addEventListener('pointerdown', () => { if(!state.running){ reset(); } jump(); });
+    window.addEventListener('keydown', (e)=>{
+      if(e.code==='Space'){ e.preventDefault(); if(!state.running){ reset(); } jump(); }
+      if(e.code==='KeyP'){ togglePause(); }
+      if(e.code==='Enter' && !state.running){ reset(); }
+    });
+    restartBtn.addEventListener('click', ()=> reset());
+    pauseBtn.addEventListener('click', ()=> togglePause());
+
+    // Start
+    reset();
+    resize();
+    loop();
+  })();
+  </script>
+</body>
+</html>
