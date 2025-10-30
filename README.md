@@ -1,2 +1,2 @@
 # game
-mini game for my README.md
+game for my README.md
